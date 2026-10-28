@@ -98,6 +98,9 @@ class MenuBot(discord.Client):
         async def tomorrow(interaction: discord.Interaction):
             await self.show(interaction, dt.datetime.now(KST).date() + dt.timedelta(days=1))
 
+        self.tree.add_command(app_commands.Command(name="오점", description=today.description, callback=today.callback))
+        self.tree.add_command(app_commands.Command(name="내점", description=tomorrow.description, callback=tomorrow.callback))
+
         @self.tree.command(name="이번주", description="일요일~토요일 기준 이번 주의 전체 메뉴표를 보여줍니다.")
         async def this_week(interaction: discord.Interaction):
             await self.show(interaction, dt.datetime.now(KST).date(), weekly=True)

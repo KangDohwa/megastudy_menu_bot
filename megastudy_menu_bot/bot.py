@@ -77,15 +77,8 @@ class MenuBot(discord.Client):
             menu = await asyncio.to_thread(self.source.get_week, week, refresh=refresh)
         if menu is None:
             return f"{week:%Y.%m.%d}~{week + dt.timedelta(days=6):%Y.%m.%d} 주간메뉴표는 아직 게시되지 않았습니다.\n출처: <{BLOG}>", None
-        if weekly:
-            content = f"{week:%Y.%m.%d}~{week + dt.timedelta(days=6):%Y.%m.%d}\n{menu.title}"
-            image = menu.full
-        else:
-            content = f"{stamp} Self 점심 메뉴"
-            image = menu.days[day.weekday()] if menu.days else menu.full
-            if image == menu.full:
-                content += "\nSelf 영역을 확인하지 못해 주간 원본을 보여드립니다."
-        return f"{content}\n출처: <{menu.url}>", discord.File(image, filename=f"menu-{day.isoformat()}{image.suffix}")
+        image = menu.full if weekly or menu.days is None else menu.days[day.weekday()]
+        return None, discord.File(image, filename=f"menu-{day.isoformat()}{image.suffix}")
 
     async def show(self, interaction: discord.Interaction, day: dt.date, *, weekly: bool = False):
         await interaction.response.defer(thinking=True)

@@ -1,0 +1,16 @@
+[project]
+name = "megastudy-menu-bot"
+version = "0.1.0"
+description = "메가스터디 구내식당 메뉴를 보여주는 Discord 봇"
+requires-python = ">=3.12"
+dependencies = [
+    "discord.py>=2.7,<3",
+    "Pillow>=12,<14",
+]
+
+[project.scripts]
+megastudy-menu-bot = "megastudy_menu_bot.bot:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

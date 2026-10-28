@@ -1,0 +1,25 @@
+[Unit]
+Description=Megastudy cafeteria Discord menu bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/opt/megastudy-menu-bot
+EnvironmentFile=/etc/megastudy-menu-bot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/megastudy-menu-bot/.venv/bin/python -m megastudy_menu_bot
+StateDirectory=megastudy-menu-bot
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

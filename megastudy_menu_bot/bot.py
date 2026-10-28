@@ -81,18 +81,24 @@ class MenuBot(discord.Client):
         return None, discord.File(image, filename=f"menu-{day.isoformat()}{image.suffix}")
 
     async def show(self, interaction: discord.Interaction, day: dt.date, *, weekly: bool = False):
-        await interaction.response.defer(thinking=True)
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
         content, attachment = await self.menu_message(day, weekly=weekly)
         try:
             await interaction.followup.send(content, **({"file": attachment} if attachment else {}))
         finally:
             if attachment:
                 attachment.close()
+        return attachment is not None
 
     def register_commands(self):
         @self.tree.command(name="오늘점심", description="한국 시간 오늘의 Self 점심 메뉴를 보여줍니다.")
         async def today(interaction: discord.Interaction):
-            await self.show(interaction, dt.datetime.now(KST).date())
+            await interaction.response.defer(thinking=True)
+            async with self.delivery_lock:
+                day = dt.datetime.now(KST).date()
+                if await self.show(interaction, day):
+                    self.store.record_view(day)
 
         @self.tree.command(name="내일점심", description="한국 시간 다음 날짜의 Self 점심 메뉴를 보여줍니다.")
         async def tomorrow(interaction: discord.Interaction):

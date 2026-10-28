@@ -65,6 +65,12 @@ class ScheduleStore:
     def consumed(self, day: dt.date) -> bool:
         return self.connection.execute("SELECT 1 FROM deliveries WHERE day = ?", (day.isoformat(),)).fetchone() is not None
 
+    def record_view(self, day: dt.date) -> None:
+        with self.connection:
+            self.connection.execute(
+                "INSERT OR IGNORE INTO deliveries(day, state) VALUES (?, 'sent')", (day.isoformat(),)
+            )
+
     def set(self, channel_id: int, clock: str, now: dt.datetime) -> Schedule:
         parse_time(clock)
         now = now.astimezone(KST)

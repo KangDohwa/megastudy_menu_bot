@@ -1,16 +1,56 @@
 """외부 발송 없이 날짜·예약 저장·표 경계 검출의 핵심 규칙을 확인한다."""
 
+import asyncio
 import datetime as dt
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 from PIL import Image, ImageDraw
 
+from .bot import MenuBot
 from .menu import CropError, KST, menu_period, safe_url, self_boxes, week_start
 from .schedule import ScheduleStore, is_due, parse_time
 
 
+async def check_manual_view():
+    with tempfile.TemporaryDirectory() as directory:
+        bot = MenuBot(123, Path(directory))
+        day = dt.datetime.now(KST).date()
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(defer=AsyncMock(), is_done=lambda: True),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        bot.menu_message = AsyncMock(return_value=(None, Mock()))
+        try:
+            await bot.tree.get_command("내점").callback(interaction)
+            assert not bot.store.consumed(day)
+            bot.menu_message.return_value = ("아직 게시되지 않았습니다.", None)
+            await bot.tree.get_command("오늘점심").callback(interaction)
+            assert not bot.store.consumed(day)
+            bot.menu_message.return_value = (None, Mock())
+            interaction.followup.send.side_effect = RuntimeError("send failed")
+            try:
+                await bot.tree.get_command("오늘점심").callback(interaction)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("failed lookup was accepted")
+            assert not bot.store.consumed(day)
+            interaction.followup.send.side_effect = None
+            await bot.tree.get_command("오점").callback(interaction)
+            assert bot.store.consumed(day) and not bot.store.claim(day)
+            assert not bot.store.consumed(day + dt.timedelta(days=1))
+        finally:
+            await bot.close()
+        store = ScheduleStore(Path(directory) / "bot.sqlite3")
+        assert store.consumed(day) and not store.claim(day)
+        store.close()
+
+
 def main():
+    asyncio.run(check_manual_view())
     sunday = dt.date(2026, 11, 1)
     assert week_start(sunday) == sunday
     assert week_start(sunday + dt.timedelta(days=6)) == sunday
@@ -73,7 +113,7 @@ def main():
             pass
         else:
             raise AssertionError("unrecognized table must fall back to original")
-    print("핵심 확인 통과: 일~토 주차, 날짜 범위, 시간 검증, 재설정·재시작·중복 방지, 10분 지연, Self 경계와 원본 대체")
+    print("핵심 확인 통과: 당일 수동 조회 후 자동 발송 생략, 일~토 주차, 날짜 범위, 시간 검증, 재설정·재시작·중복 방지, 10분 지연, Self 경계와 원본 대체")
 
 
 if __name__ == "__main__":

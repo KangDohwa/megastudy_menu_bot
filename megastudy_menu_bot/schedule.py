@@ -41,69 +41,107 @@ def is_due(schedule: Schedule, now: dt.datetime) -> bool:
 
 
 class ScheduleStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, legacy_guild_id: int | None = None):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(path)
-        self.connection.executescript("""
-            CREATE TABLE IF NOT EXISTS schedule (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
+        try:
+            self._initialize(legacy_guild_id)
+        except Exception:
+            self.connection.close()
+            raise
+
+    def _initialize(self, legacy_guild_id: int | None) -> None:
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute("""CREATE TABLE IF NOT EXISTS guild_schedules (
+                guild_id INTEGER PRIMARY KEY,
                 channel_id INTEGER NOT NULL,
                 clock TEXT NOT NULL,
                 first_date TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS deliveries (
-                day TEXT PRIMARY KEY,
+            )""")
+            self.connection.execute("""CREATE TABLE IF NOT EXISTS guild_deliveries (
+                guild_id INTEGER NOT NULL,
+                day TEXT NOT NULL,
                 state TEXT NOT NULL CHECK (state IN ('pending', 'sent')),
-                message_id TEXT
-            );
-        """)
+                message_id TEXT,
+                PRIMARY KEY (guild_id, day)
+            )""")
+            # 옛 테이블에는 서버 ID가 없어서 이전 설정의 서버에만 기록을 옮긴다.
+            for old, new, columns in (
+                ("schedule", "guild_schedules", "channel_id, clock, first_date"),
+                ("deliveries", "guild_deliveries", "day, state, message_id"),
+            ):
+                if not self.connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (old,)
+                ).fetchone():
+                    continue
+                if legacy_guild_id is None and self.connection.execute(f"SELECT 1 FROM {old} LIMIT 1").fetchone():
+                    raise ValueError("기존 예약과 발송 기록을 옮기려면 기존 DISCORD_GUILD_ID가 필요합니다.")
+                self.connection.execute(
+                    f"INSERT INTO {new} (guild_id, {columns}) SELECT ?, {columns} FROM {old}",
+                    (legacy_guild_id,),
+                )
+                self.connection.execute(f"DROP TABLE {old}")
 
-    def get(self) -> Schedule | None:
-        row = self.connection.execute("SELECT channel_id, clock, first_date FROM schedule WHERE id = 1").fetchone()
+    def scheduled_guilds(self) -> list[int]:
+        return [row[0] for row in self.connection.execute("SELECT guild_id FROM guild_schedules")]
+
+    def get(self, guild_id: int) -> Schedule | None:
+        row = self.connection.execute(
+            "SELECT channel_id, clock, first_date FROM guild_schedules WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
         return Schedule(row[0], row[1], dt.date.fromisoformat(row[2])) if row else None
 
-    def consumed(self, day: dt.date) -> bool:
-        return self.connection.execute("SELECT 1 FROM deliveries WHERE day = ?", (day.isoformat(),)).fetchone() is not None
+    def consumed(self, guild_id: int, day: dt.date) -> bool:
+        return self.connection.execute(
+            "SELECT 1 FROM guild_deliveries WHERE guild_id = ? AND day = ?", (guild_id, day.isoformat())
+        ).fetchone() is not None
 
-    def record_view(self, day: dt.date) -> None:
+    def record_view(self, guild_id: int, day: dt.date) -> None:
         with self.connection:
             self.connection.execute(
-                "INSERT OR IGNORE INTO deliveries(day, state) VALUES (?, 'sent')", (day.isoformat(),)
+                "INSERT OR IGNORE INTO guild_deliveries(guild_id, day, state) VALUES (?, ?, 'sent')",
+                (guild_id, day.isoformat()),
             )
 
-    def set(self, channel_id: int, clock: str, now: dt.datetime) -> Schedule:
+    def set(self, guild_id: int, channel_id: int, clock: str, now: dt.datetime) -> Schedule:
         parse_time(clock)
         now = now.astimezone(KST)
         provisional = Schedule(channel_id, clock, now.date())
-        first = next_run(provisional, now, self.consumed(now.date())).date()
+        first = next_run(provisional, now, self.consumed(guild_id, now.date())).date()
         with self.connection:
             self.connection.execute(
-                "INSERT INTO schedule VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+                "INSERT INTO guild_schedules(guild_id, channel_id, clock, first_date) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(guild_id) DO UPDATE SET "
                 "channel_id=excluded.channel_id, clock=excluded.clock, first_date=excluded.first_date",
-                (channel_id, clock, first.isoformat()),
+                (guild_id, channel_id, clock, first.isoformat()),
             )
         return Schedule(channel_id, clock, first)
 
-    def disable(self) -> None:
+    def disable(self, guild_id: int) -> None:
         with self.connection:
-            self.connection.execute("DELETE FROM schedule WHERE id = 1")
+            self.connection.execute("DELETE FROM guild_schedules WHERE guild_id = ?", (guild_id,))
 
-    def claim(self, day: dt.date) -> bool:
+    def claim(self, guild_id: int, day: dt.date) -> bool:
         with self.connection:
             cursor = self.connection.execute(
-                "INSERT OR IGNORE INTO deliveries(day, state) VALUES (?, 'pending')", (day.isoformat(),)
+                "INSERT OR IGNORE INTO guild_deliveries(guild_id, day, state) VALUES (?, ?, 'pending')",
+                (guild_id, day.isoformat()),
             )
         return cursor.rowcount == 1
 
-    def release(self, day: dt.date) -> None:
-        with self.connection:
-            self.connection.execute("DELETE FROM deliveries WHERE day = ? AND state = 'pending'", (day.isoformat(),))
-
-    def mark_sent(self, day: dt.date, message_id: int) -> None:
+    def release(self, guild_id: int, day: dt.date) -> None:
         with self.connection:
             self.connection.execute(
-                "UPDATE deliveries SET state = 'sent', message_id = ? WHERE day = ?",
-                (str(message_id), day.isoformat()),
+                "DELETE FROM guild_deliveries WHERE guild_id = ? AND day = ? AND state = 'pending'",
+                (guild_id, day.isoformat()),
+            )
+
+    def mark_sent(self, guild_id: int, day: dt.date, message_id: int) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE guild_deliveries SET state = 'sent', message_id = ? WHERE guild_id = ? AND day = ?",
+                (str(message_id), guild_id, day.isoformat()),
             )
 
     def close(self) -> None:

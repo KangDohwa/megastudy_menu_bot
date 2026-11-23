@@ -16,19 +16,21 @@ from .schedule import ScheduleStore, is_due, parse_time
 
 async def check_manual_view():
     with tempfile.TemporaryDirectory() as directory:
-        bot = MenuBot(123, Path(directory))
+        guild_id = 123
+        bot = MenuBot(Path(directory))
         day = dt.datetime.now(KST).date()
         interaction = SimpleNamespace(
+            guild_id=guild_id,
             response=SimpleNamespace(defer=AsyncMock(), is_done=lambda: True),
             followup=SimpleNamespace(send=AsyncMock()),
         )
         bot.menu_message = AsyncMock(return_value=(None, Mock()))
         try:
             await bot.tree.get_command("내점").callback(interaction)
-            assert not bot.store.consumed(day)
+            assert not bot.store.consumed(guild_id, day)
             bot.menu_message.return_value = ("아직 게시되지 않았습니다.", None)
             await bot.tree.get_command("오늘점심").callback(interaction)
-            assert not bot.store.consumed(day)
+            assert not bot.store.consumed(guild_id, day)
             bot.menu_message.return_value = (None, Mock())
             interaction.followup.send.side_effect = RuntimeError("send failed")
             try:
@@ -37,15 +39,16 @@ async def check_manual_view():
                 pass
             else:
                 raise AssertionError("failed lookup was accepted")
-            assert not bot.store.consumed(day)
+            assert not bot.store.consumed(guild_id, day)
             interaction.followup.send.side_effect = None
             await bot.tree.get_command("오점").callback(interaction)
-            assert bot.store.consumed(day) and not bot.store.claim(day)
-            assert not bot.store.consumed(day + dt.timedelta(days=1))
+            assert bot.store.consumed(guild_id, day) and not bot.store.claim(guild_id, day)
+            assert not bot.store.consumed(456, day)
+            assert not bot.store.consumed(guild_id, day + dt.timedelta(days=1))
         finally:
             await bot.close()
         store = ScheduleStore(Path(directory) / "bot.sqlite3")
-        assert store.consumed(day) and not store.claim(day)
+        assert store.consumed(guild_id, day) and not store.claim(guild_id, day)
         store.close()
 
 
@@ -72,27 +75,31 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         database = Path(directory) / "bot.sqlite3"
         store = ScheduleStore(database)
+        guild_id = 111
         morning = dt.datetime(2026, 10, 30, 10, 0, tzinfo=KST)
-        schedule = store.set(123, "11:30", morning)
+        schedule = store.set(guild_id, 123, "11:30", morning)
         assert not is_due(schedule, morning)
         assert is_due(schedule, morning.replace(hour=11, minute=30))
         assert is_due(schedule, morning.replace(hour=11, minute=40))
         assert not is_due(schedule, morning.replace(hour=11, minute=40, second=1))
         assert not is_due(schedule, morning + dt.timedelta(days=1, hours=1, minutes=30))
-        assert store.claim(morning.date()) and not store.claim(morning.date())
-        store.mark_sent(morning.date(), 456)
-        changed = store.set(789, "12:00", morning)
+        assert store.claim(guild_id, morning.date()) and not store.claim(guild_id, morning.date())
+        store.mark_sent(guild_id, morning.date(), 456)
+        other = store.set(222, 888, "11:30", morning)
+        assert other.first_date == morning.date()
+        changed = store.set(guild_id, 789, "12:00", morning)
         assert changed.channel_id == 789 and changed.first_date == dt.date(2026, 11, 2)
-        store.disable()
-        assert store.get() is None and store.consumed(morning.date())
+        store.disable(guild_id)
+        assert store.get(guild_id) is None and store.consumed(guild_id, morning.date())
+        assert store.get(222) == other
         store.close()
         store = ScheduleStore(database)
-        assert store.consumed(morning.date())
-        past = store.set(123, "09:00", morning)
+        assert store.consumed(guild_id, morning.date())
+        past = store.set(guild_id, 123, "09:00", morning)
         assert past.first_date == dt.date(2026, 11, 2)
         store.close()
         store = ScheduleStore(database)
-        assert store.get() == past
+        assert store.get(guild_id) == past
         store.close()
 
     with Image.new("RGB", (1000, 750), "white") as image:
